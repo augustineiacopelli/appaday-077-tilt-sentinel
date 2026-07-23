@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Tilt Sentinel — AppADay 077</title>
+<meta name="description" content="A live dashboard and alerting layer for Tilt Hydrometer Google Sheets. Watches gravity, temperature, and staleness for a fermenting batch and pushes a phone notification when something needs attention.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23181410'/%3E%3Ccircle cx='32' cy='36' r='16' fill='none' stroke='%23e8a33d' stroke-width='4'/%3E%3Cline x1='32' y1='36' x2='32' y2='22' stroke='%23e8a33d' stroke-width='4' stroke-linecap='round'/%3E%3Crect x='27' y='8' width='10' height='10' rx='2' fill='%23e8a33d'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#141110;
+    --bg2:#1b1714;
+    --panel:#211c18;
+    --panel-hi:#28221d;
+    --line:rgba(244,234,217,0.10);
+    --line-strong:rgba(244,234,217,0.18);
+    --cream:#f4ead9;
+    --muted:#a89a86;
+    --amber:#e8a33d;
+    --amber-dim:rgba(232,163,61,0.14);
+    --copper:#c17817;
+    --good:#4caf82;
+    --good-dim:rgba(76,175,130,0.14);
+    --warn:#e0a63e;
+    --warn-dim:rgba(224,166,62,0.14);
+    --bad:#e05c4f;
+    --bad-dim:rgba(224,92,79,0.14);
+    --radius:10px;
+  }
+  *,*::before,*::after{ box-sizing:border-box; margin:0; padding:0; }
+  html{ scroll-behavior:smooth; }
+  body{
+    font-family:'Space Mono', monospace;
+    background:
+      radial-gradient(1200px 700px at 15% -10%, rgba(232,163,61,0.06), transparent 60%),
+      var(--bg);
+    color:var(--cream);
+    min-height:100dvh;
+    overflow-x:hidden;
+  }
+  h1,h2,h3,.serif{ font-family:'Fraunces', serif; }
+  a{ color:inherit; }
+  button{ font-family:inherit; cursor:pointer; }
+  input, select{ font-family:inherit; }
+
+  /* ---------- header ---------- */
+  .app-header{
+    position:sticky; top:0; z-index:40;
+    display:flex; align-items:center; gap:12px;
+    padding:12px 16px;
+    background:rgba(20,17,16,0.92);
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .app-header .badge{
+    font-size:11px; letter-spacing:0.08em; color:var(--muted);
+    border:1px solid var(--line-strong); border-radius:4px; padding:3px 7px;
+  }
+  .app-header h1{ font-size:19px; font-weight:600; letter-spacing:-0.01em; flex:1; }
+  .app-header .icon-btn{
+    background:transparent; border:1px solid var(--line-strong); color:var(--cream);
+    border-radius:8px; width:36px; height:36px; display:flex; align-items:center; justify-content:center;
+    font-size:16px;
+  }
+  .app-header .icon-btn:active{ background:var(--panel-hi); }
+  .app-header .portal-link{
+    font-size:11px; color:var(--muted); text-decoration:none; letter-spacing:0.06em;
+    border:1px solid var(--line-strong); border-radius:8px; padding:8px 10px;
+  }
+
+  main{ max-width:920px; margin:0 auto; padding:16px 14px 64px; }
+
+  /* ---------- setup ---------- */
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:18px; margin-bottom:14px;
+  }
+  .card h2{ font-size:17px; font-weight:600; margin-bottom:6px; }
+  .card .hint{ font-size:12.5px; color:var(--muted); line-height:1.55; margin-bottom:12px; }
+  .field-row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .field-row input[type=text]{
+    flex:1; min-width:180px; background:var(--bg2); border:1px solid var(--line-strong);
+    color:var(--cream); border-radius:8px; padding:11px 12px; font-size:13px;
+  }
+  .field-row input[type=text]:focus{ outline:none; border-color:var(--amber); }
+  .btn{
+    border:none; border-radius:8px; padding:11px 16px; font-size:13px; letter-spacing:0.02em;
+    background:var(--amber); color:#1a1410; font-weight:700;
+  }
+  .btn:active{ transform:translateY(1px); }
+  .btn.secondary{ background:transparent; border:1px solid var(--line-strong); color:var(--cream); font-weight:400; }
+  .btn.ghost{ background:transparent; border:1px solid var(--line-strong); color:var(--muted); font-weight:400; }
+  .btn.danger{ background:var(--bad); color:#2a0d0a; }
+  .btn:disabled{ opacity:0.45; }
+  .btn-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+
+  /* ---------- batch tabs ---------- */
+  .batch-tabs{ display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; margin-bottom:14px; -webkit-overflow-scrolling:touch; }
+  .batch-tabs::-webkit-scrollbar{ height:4px; }
+  .batch-chip{
+    flex:0 0 auto; display:flex; align-items:center; gap:6px;
+    background:var(--panel); border:1px solid var(--line-strong); color:var(--muted);
+    border-radius:20px; padding:8px 14px; font-size:12.5px; white-space:nowrap;
+  }
+  .batch-chip .dot{ width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .batch-chip.active{ background:var(--amber-dim); border-color:var(--amber); color:var(--cream); }
+  .batch-chip.add{ color:var(--amber); border-style:dashed; }
+
+  /* ---------- status pill ---------- */
+  .status-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .status-pill{
+    display:inline-flex; align-items:center; gap:6px; font-size:11.5px; letter-spacing:0.06em;
+    text-transform:uppercase; padding:5px 10px; border-radius:20px; font-weight:700;
+  }
+  .status-pill.good{ background:var(--good-dim); color:var(--good); }
+  .status-pill.warn{ background:var(--warn-dim); color:var(--warn); }
+  .status-pill.bad{ background:var(--bad-dim); color:var(--bad); }
+  .status-pill .dot{ width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .batch-title{ font-size:22px; font-weight:600; flex:1; min-width:160px; }
+  .last-seen{ font-size:11.5px; color:var(--muted); }
+
+  /* ---------- stat grid ---------- */
+  .stat-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:14px; }
+  @media (min-width:600px){ .stat-grid{ grid-template-columns:repeat(4,1fr); } }
+  .stat{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:13px 14px;
+  }
+  .stat .label{ font-size:10px; letter-spacing:0.09em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
+  .stat .value{ font-size:22px; font-weight:700; color:var(--amber); line-height:1.1; }
+  .stat .value small{ font-size:12px; color:var(--muted); font-weight:400; }
+  .stat.editable{ position:relative; }
+  .stat.editable input{
+    width:100%; background:transparent; border:none; color:var(--amber);
+    font-family:'Space Mono', monospace; font-size:22px; font-weight:700; padding:0;
+  }
+  .stat.editable input:focus{ outline:none; }
+  .stat .sub-edit{ font-size:10px; color:var(--muted); margin-top:4px; }
+
+  /* ---------- chart ---------- */
+  .chart-card .chart-controls{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px; }
+  .range-btns{ display:flex; gap:6px; }
+  .range-btn{
+    background:transparent; border:1px solid var(--line-strong); color:var(--muted);
+    border-radius:6px; padding:6px 10px; font-size:11px;
+  }
+  .range-btn.active{ background:var(--amber); border-color:var(--amber); color:#1a1410; font-weight:700; }
+  .legend{ display:flex; gap:14px; font-size:11px; color:var(--muted); }
+  .legend span{ display:inline-flex; align-items:center; gap:5px; }
+  .legend i{ width:14px; height:2px; display:inline-block; }
+  canvas#chart{ width:100%; height:260px; display:block; touch-action:pan-y; }
+  @media (min-width:700px){ canvas#chart{ height:340px; } }
+  #chart-empty{ color:var(--muted); font-size:12.5px; text-align:center; padding:40px 0; }
+  #chart-tooltip{
+    position:absolute; pointer-events:none; background:#0d0b09; border:1px solid var(--line-strong);
+    border-radius:6px; padding:8px 10px; font-size:11px; line-height:1.5; color:var(--cream);
+    box-shadow:0 6px 20px rgba(0,0,0,0.4); display:none; z-index:5; max-width:210px;
+  }
+  .chart-wrap{ position:relative; }
+
+  /* ---------- alerts ---------- */
+  .monitor-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .monitor-status{ font-size:11.5px; color:var(--muted); flex:1; }
+  .monitor-status.live{ color:var(--good); }
+  .switch{
+    position:relative; width:44px; height:24px; border-radius:12px; background:var(--bg2);
+    border:1px solid var(--line-strong); flex:0 0 auto;
+  }
+  .switch.on{ background:var(--good-dim); border-color:var(--good); }
+  .switch .knob{
+    position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+    background:var(--muted); transition:transform 0.15s ease, background 0.15s ease;
+  }
+  .switch.on .knob{ transform:translateX(20px); background:var(--good); }
+
+  .alert-log{ max-height:280px; overflow-y:auto; }
+  .alert-item{
+    display:flex; gap:10px; padding:10px 0; border-top:1px solid var(--line);
+  }
+  .alert-item:first-child{ border-top:none; }
+  .alert-item .sev-dot{ width:8px; height:8px; border-radius:50%; margin-top:5px; flex:0 0 auto; }
+  .alert-item .sev-dot.warn{ background:var(--warn); }
+  .alert-item .sev-dot.bad{ background:var(--bad); }
+  .alert-item .sev-dot.info{ background:var(--good); }
+  .alert-item .msg{ font-size:12.5px; flex:1; line-height:1.5; }
+  .alert-item .ts{ font-size:10.5px; color:var(--muted); margin-top:2px; }
+  .empty-log{ color:var(--muted); font-size:12px; padding:14px 0; text-align:center; }
+
+  /* ---------- modal ---------- */
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(10,8,7,0.72); z-index:100;
+    display:flex; align-items:flex-end; justify-content:center;
+  }
+  @media (min-width:640px){ .modal-overlay{ align-items:center; } }
+  .modal{
+    background:var(--bg2); border:1px solid var(--line-strong); border-radius:16px 16px 0 0;
+    width:100%; max-width:520px; max-height:88vh; overflow-y:auto; padding:20px;
+  }
+  @media (min-width:640px){ .modal{ border-radius:14px; } }
+  .modal h2{ font-size:18px; margin-bottom:14px; }
+  .modal h3{ font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); margin:18px 0 10px; }
+  .modal h3:first-of-type{ margin-top:2px; }
+  .form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .form-field{ display:flex; flex-direction:column; gap:5px; }
+  .form-field.full{ grid-column:1 / -1; }
+  .form-field label{ font-size:11px; color:var(--muted); }
+  .form-field input, .form-field select{
+    background:var(--bg); border:1px solid var(--line-strong); color:var(--cream);
+    border-radius:7px; padding:9px 10px; font-size:13px;
+  }
+  .form-field input:focus, .form-field select:focus{ outline:none; border-color:var(--amber); }
+  .check-row{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); margin-top:4px; }
+  .modal-close{ position:sticky; top:0; float:right; }
+  .saved-batch-row{
+    display:flex; align-items:center; gap:8px; padding:8px 0; border-top:1px solid var(--line);
+    font-size:12px;
+  }
+  .saved-batch-row:first-of-type{ border-top:none; }
+  .saved-batch-row .sb-name{ flex:1; }
+  .saved-batch-row button{ background:transparent; border:1px solid var(--line-strong); color:var(--muted); border-radius:6px; padding:5px 8px; font-size:11px; }
+
+  /* ---------- toast ---------- */
+  #toast-container{ position:fixed; left:0; right:0; bottom:16px; display:flex; flex-direction:column; align-items:center; gap:8px; z-index:200; pointer-events:none; padding:0 14px; }
+  .toast{
+    background:#0d0b09; border:1px solid var(--line-strong); color:var(--cream);
+    padding:10px 16px; border-radius:8px; font-size:12.5px; max-width:420px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.45); animation:toastIn 0.2s ease;
+  }
+  .toast.bad{ border-color:var(--bad); }
+  .toast.good{ border-color:var(--good); }
+  @keyframes toastIn{ from{ opacity:0; transform:translateY(8px);} to{ opacity:1; transform:translateY(0);} }
+
+  .footer-note{ text-align:center; color:var(--muted); font-size:10.5px; letter-spacing:0.04em; margin-top:24px; line-height:1.7; }
+  .footer-note a{ color:var(--amber); text-decoration:none; }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <span class="badge">077</span>
+  <h1>Tilt Sentinel</h1>
+  <a class="portal-link" href="https://augustineiacopelli.github.io/appaday/" target="_blank" rel="noopener">AppADay ↗</a>
+  <button class="icon-btn" id="settings-btn" title="Settings" hidden>⚙</button>
+</div>
+
+<main>
+
+  <section id="setup-section" class="card">
+    <h2>Add a batch</h2>
+    <p class="hint">Paste the share link (or the ID) of the Google Sheet your Tilt is logging to. It must be shared as "Anyone with the link can view." Each brew session usually gets its own sheet — add as many as you're running at once.</p>
+    <div class="field-row">
+      <input type="text" id="sheet-url-input" placeholder="https://docs.google.com/spreadsheets/d/…">
+      <button class="btn" id="add-batch-btn">Add Batch</button>
+    </div>
+    <p class="hint" id="setup-error" style="color:var(--bad); display:none; margin-top:10px; margin-bottom:0;"></p>
+  </section>
+
+  <div id="batch-tabs" class="batch-tabs" hidden></div>
+
+  <section id="dashboard" hidden>
+
+    <div class="status-row">
+      <div class="batch-title serif" id="batch-title">—</div>
+      <span class="status-pill good" id="status-pill"><span class="dot"></span><span id="status-label">Fresh</span></span>
+    </div>
+    <div class="last-seen" id="last-seen" style="margin-top:-8px; margin-bottom:14px;"></div>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="label">Current Gravity</div>
+        <div class="value" id="stat-sg">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Current Temp</div>
+        <div class="value" id="stat-temp">—</div>
+      </div>
+      <div class="stat editable">
+        <div class="label">Original Gravity</div>
+        <input type="text" id="stat-og" inputmode="decimal">
+        <div class="sub-edit">tap to override</div>
+      </div>
+      <div class="stat editable">
+        <div class="label">Target FG</div>
+        <input type="text" id="stat-fg" inputmode="decimal" placeholder="—">
+        <div class="sub-edit">optional</div>
+      </div>
+      <div class="stat">
+        <div class="label">Apparent Attenuation</div>
+        <div class="value" id="stat-atten">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Est. ABV</div>
+        <div class="value" id="stat-abv">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Days Fermenting</div>
+        <div class="value" id="stat-days">—</div>
+      </div>
+      <div class="stat">
+        <div class="label">Readings Logged</div>
+        <div class="value" id="stat-points">—</div>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="chart-controls">
+        <div class="range-btns" id="range-btns">
+          <button class="range-btn" data-range="1">24H</button>
+          <button class="range-btn" data-range="3">3D</button>
+          <button class="range-btn" data-range="7">7D</button>
+          <button class="range-btn active" data-range="0">All</button>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--sg-color, #e8a33d);"></i>Gravity</span>
+          <span><i style="background:#7fa8c9; border-top:2px dashed #7fa8c9; background:none;"></i>Temp</span>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+        <div id="chart-empty" hidden>No readings in this range yet.</div>
+        <div id="chart-tooltip"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Monitoring &amp; Alerts</h2>
+      <div class="monitor-row">
+        <div class="monitor-status" id="monitor-status">Monitoring is off. Turn it on to poll this sheet and push alerts while this tab stays open.</div>
+        <div class="switch" id="monitor-switch"><div class="knob"></div></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn secondary" id="check-now-btn">Check Now</button>
+        <button class="btn ghost" id="clear-log-btn">Clear Log</button>
+      </div>
+      <h3 style="margin-top:18px; margin-bottom:8px; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted);">Alert Log</h3>
+      <div class="alert-log" id="alert-log"></div>
+    </div>
+
+    <p class="footer-note">
+      Monitoring only runs while this page is open — there's no server behind it. Leave it open on a spare phone or laptop near the fermentation chamber, or tap Check Now whenever you think of it. Alerts push through <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy.sh</a> if you set a topic in Settings.<br>
+      <a href="https://augustineiacopelli.github.io/appaday/" target="_blank" rel="noopener">https://augustineiacopelli.github.io/appaday/</a>
+    </p>
+
+  </section>
+
+</main>
+
+<div id="toast-container"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   CONSTANTS
+============================================================ */
+var STORAGE_KEY = "tiltSentinelData";
+var NTFY_BASE = "https://ntfy.sh/";
+var MAX_CHART_POINTS = 500;
+
+var TILT_COLORS = {
+  RED:"#d64545", GREEN:"#3fae6a", BLACK:"#c9bfae", PURPLE:"#a06bd8",
+  ORANGE:"#e08a2e", BLUE:"#5aa0dd", YELLOW:"#e0c02e", PINK:"#e07aac"
+};
+
+var DEFAULT_BATCH_SETTINGS = {
+  tempMin: 60, tempMax: 75, tempUnitLabel: "F",
+  stallDelta: 0.001, stallHours: 24,
+  staleMinutes: 90, swingDegrees: 5,
+  fgTarget: null, ogOverride: null
+};
+
+var DEFAULT_GLOBAL_SETTINGS = {
+  ntfyTopic: "", pollMinutes: 5, keepAwake: true
+};
+
+/* ============================================================
+   STORE (localStorage, defensive against sandboxed contexts)
+============================================================ */
+function safeGetItem(key){
+  try { return window.localStorage.getItem(key); } catch(e){ return null; }
+}
+function safeSetItem(key, val){
+  try { window.localStorage.setItem(key, val); } catch(e){ /* ignore */ }
+}
+
+function loadStore(){
+  var raw = safeGetItem(STORAGE_KEY);
+  var store = null;
+  if (raw) {
+    try { store = JSON.parse(raw); } catch(e){ store = null; }
+  }
+  if (!store) {
+    store = { batches: [], activeBatchId: null, global: Object.assign({}, DEFAULT_GLOBAL_SETTINGS), perBatch: {} };
+  }
+  if (!store.batches) store.batches = [];
+  if (!store.global) store.global = Object.assign({}, DEFAULT_GLOBAL_SETTINGS);
+  if (!store.perBatch) store.perBatch = {};
+  return store;
+}
+function saveStore(){
+  safeSetItem(STORAGE_KEY, JSON.stringify(STORE));
+}
+var STORE = loadStore();
+
+function getBatchSettings(batchId){
+  if (!STORE.perBatch[batchId]) {
+    STORE.perBatch[batchId] = {
+      settings: Object.assign({}, DEFAULT_BATCH_SETTINGS),
+      activeConditions: { stale:false, tempHigh:false, tempLow:false, stall:false, swing:false },
+      alertLog: []
+    };
+  }
+  if (!STORE.perBatch[batchId].settings) STORE.perBatch[batchId].settings = Object.assign({}, DEFAULT_BATCH_SETTINGS);
+  if (!STORE.perBatch[batchId].activeConditions) STORE.perBatch[batchId].activeConditions = { stale:false, tempHigh:false, tempLow:false, stall:false, swing:false };
+  if (!STORE.perBatch[batchId].alertLog) STORE.perBatch[batchId].alertLog = [];
+  return STORE.perBatch[batchId];
+}
+
+/* ============================================================
+   SHEET ID / GID PARSING
+============================================================ */
+function parseSheetInput(raw){
+  raw = (raw || "").trim();
+  if (!raw) return null;
+  var idMatch = raw.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  var id = idMatch ? idMatch[1] : (/^[a-zA-Z0-9-_]{20,}$/.test(raw) ? raw : null);
+  if (!id) return null;
+  var gidMatch = raw.match(/[?#&]gid=(\d+)/);
+  var gid = gidMatch ? gidMatch[1] : null;
+  return { sheetId: id, gid: gid };
+}
+
+/* ============================================================
+   JSONP SHEET LOADER
+============================================================ */
+// Read a public Google Sheet via gviz JSONP. A static page cannot use fetch()
+// against this endpoint (it sends no CORS headers), so the response arrives
+// through an injected script. We catch it whether gviz calls our named handler
+// or its built-in setResponse, which keeps the load robust across gviz quirks.
+window.google = window.google || {};
+window.google.visualization = window.google.visualization || {};
+window.google.visualization.Query = window.google.visualization.Query || {};
+window.google.visualization.Query.setResponse = function(resp){
+  if (typeof window.__tiltPending === "function") window.__tiltPending(resp);
+};
+
+function loadSheetData(sheetId, gid, timeoutMs){
+  timeoutMs = timeoutMs || 12000;
+  return new Promise(function(resolve, reject){
+    var cbName = "tiltCB_" + Math.random().toString(36).slice(2) + Date.now();
+    var script = document.createElement("script");
+    var done = false;
+    function settle(fn){ if (done) return; done = true; cleanup(); fn(); }
+    var timer = setTimeout(function(){
+      settle(function(){
+        reject(new Error("The sheet did not respond in time. Confirm it is shared as Anyone with the link can view, then try again."));
+      });
+    }, timeoutMs);
+    function cleanup(){
+      try { delete window[cbName]; } catch(e){ window[cbName] = undefined; }
+      if (window.__tiltPending === handle) window.__tiltPending = null;
+      if (script.parentNode) script.parentNode.removeChild(script);
+      clearTimeout(timer);
+    }
+    function handle(resp){ settle(function(){ resolve(resp); }); }
+    window[cbName] = handle;
+    window.__tiltPending = handle;
+    script.onerror = function(){
+      settle(function(){
+        reject(new Error("Could not reach Google Sheets. Open this in a real browser tab, not an in-app preview, then check the link and your connection."));
+      });
+    };
+    var url = "https://docs.google.com/spreadsheets/d/" + encodeURIComponent(sheetId) + "/gviz/tq?tqx=out:json;responseHandler:" + cbName;
+    if (gid) url += "&gid=" + encodeURIComponent(gid);
+    script.src = url;
+    document.head.appendChild(script);
+  });
+}
+
+/* ============================================================
+   PARSE GVIZ RESPONSE INTO { beer, colorName, points[] }
+   points[i] = { t: Date, sg: number|null, temp: number|null, comment: string }
+============================================================ */
+function cellText(cell){
+  if (!cell) return "";
+  if (typeof cell.f === "string" && cell.f.length) return cell.f;
+  if (cell.v === null || cell.v === undefined) return "";
+  return String(cell.v);
+}
+function cellNumber(cell){
+  if (!cell) return null;
+  if (typeof cell.v === "number") return cell.v;
+  var f = cellText(cell);
+  var n = parseFloat(f);
+  return isNaN(n) ? null : n;
+}
+function parseGvizDate(cell){
+  if (!cell) return null;
+  var f = cellText(cell);
+  if (f) {
+    var d = new Date(f);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (typeof cell.v === "string") {
+    var m = cell.v.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)$/);
+    if (m) {
+      return new Date(
+        parseInt(m[1],10), parseInt(m[2],10), parseInt(m[3],10),
+        m[4]?parseInt(m[4],10):0, m[5]?parseInt(m[5],10):0, m[6]?parseInt(m[6],10):0
+      );
+    }
+  }
+  return null;
+}
+
+function findColumns(table){
+  var cols = table.cols || [];
+  var labels = cols.map(function(c){ return (c.label || "").trim().toLowerCase(); });
+  function findByLabel(needle){
+    for (var i=0;i<labels.length;i++){ if (labels[i].indexOf(needle) === 0) return i; }
+    return -1;
+  }
+  var idx = {
+    time: findByLabel("timepoint"),
+    sg: -1,
+    temp: findByLabel("temp"),
+    color: findByLabel("color"),
+    beer: findByLabel("beer"),
+    comment: findByLabel("comment")
+  };
+  // "sg" needs an exact-ish match so it doesn't collide with other columns
+  for (var i=0;i<labels.length;i++){ if (labels[i] === "sg") { idx.sg = i; break; } }
+
+  var headerFound = idx.time >= 0 && idx.sg >= 0;
+  var startRow = 0;
+
+  if (!headerFound && table.rows && table.rows.length) {
+    // gviz didn't detect a header row - scan row 0 manually
+    var row0 = table.rows[0].c || [];
+    var scanned = { time:-1, sg:-1, temp:-1, color:-1, beer:-1, comment:-1 };
+    for (var j=0;j<row0.length;j++){
+      var t = cellText(row0[j]).trim().toLowerCase();
+      if (t === "timepoint") scanned.time = j;
+      else if (t === "sg") scanned.sg = j;
+      else if (t.indexOf("temp") === 0) scanned.temp = j;
+      else if (t === "color") scanned.color = j;
+      else if (t === "beer") scanned.beer = j;
+      else if (t.indexOf("comment") === 0) scanned.comment = j;
+    }
+    if (scanned.time >= 0 && scanned.sg >= 0) {
+      idx = scanned;
+      startRow = 1;
+      headerFound = true;
+    }
+  }
+  idx.headerFound = headerFound;
+  idx.startRow = startRow;
+  return idx;
+}
+
+function parseSheetData(resp){
+  if (resp && resp.status === "error") {
+    var e0 = resp.errors && resp.errors[0];
+    var emsg = (e0 && (e0.detailed_message || e0.message)) || "The sheet returned an error.";
+    throw new Error(String(emsg).replace(/<[^>]+>/g, "").trim());
+  }
+  if (!resp || !resp.table) throw new Error("Unexpected response from the sheet.");
+  var table = resp.table;
+  var idx = findColumns(table);
+  if (!idx.headerFound) {
+    throw new Error("Couldn't find Timepoint and SG columns on the tab that loaded. If your Tilt sheet has several tabs, open the tab with the raw log and copy that URL (it includes the tab gid), then add it again.");
+  }
+  var rows = table.rows || [];
+  var points = [];
+  var beerCounts = {};
+  var lastColorName = "";
+
+  for (var r = idx.startRow; r < rows.length; r++) {
+    var c = rows[r].c || [];
+    var tCell = c[idx.time];
+    var t = parseGvizDate(tCell);
+    if (!t) continue;
+    var sg = idx.sg >= 0 ? cellNumber(c[idx.sg]) : null;
+    var temp = idx.temp >= 0 ? cellNumber(c[idx.temp]) : null;
+    var beer = idx.beer >= 0 ? cellText(c[idx.beer]).trim() : "";
+    var color = idx.color >= 0 ? cellText(c[idx.color]).trim() : "";
+    var comment = idx.comment >= 0 ? cellText(c[idx.comment]).trim() : "";
+    if (sg === null && temp === null) continue;
+    if (beer) beerCounts[beer] = (beerCounts[beer] || 0) + 1;
+    if (color) lastColorName = color;
+    points.push({ t: t, sg: sg, temp: temp, comment: comment });
+  }
+
+  points.sort(function(a,b){ return a.t - b.t; });
+
+  var bestBeer = "";
+  var bestCount = -1;
+  for (var name in beerCounts) { if (beerCounts[name] > bestCount) { bestCount = beerCounts[name]; bestBeer = name; } }
+
+  // temp unit label from header text, e.g. "Temp (F-degrees)"
+  var tempUnitLabel = "";
+  if (idx.temp >= 0 && table.cols[idx.temp] && table.cols[idx.temp].label) {
+    var lm = table.cols[idx.temp].label.match(/\(([^)]+)\)/);
+    if (lm) tempUnitLabel = lm[1].replace(/[^A-Za-z]/g, "");
+  }
+  if (!tempUnitLabel) tempUnitLabel = "F";
+
+  return { beer: bestBeer, colorName: lastColorName, points: points, tempUnitLabel: tempUnitLabel };
+}
+
+/* ============================================================
+   TOAST
+============================================================ */
+function toast(msg, kind){
+  var el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  document.getElementById("toast-container").appendChild(el);
+  setTimeout(function(){
+    el.style.transition = "opacity 0.3s ease";
+    el.style.opacity = "0";
+    setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+  }, 4200);
+}
+
+/* ============================================================
+   NTFY PUSH
+============================================================ */
+function sendNtfy(title, message, priority, tags){
+  var topic = STORE.global.ntfyTopic;
+  if (!topic) return Promise.resolve(false);
+  return fetch(NTFY_BASE + encodeURIComponent(topic), {
+    method: "POST",
+    body: message,
+    headers: {
+      "Title": title,
+      "Priority": priority || "default",
+      "Tags": tags || "beer"
+    }
+  }).then(function(){ return true; }).catch(function(err){
+    console.error("ntfy send failed", err);
+    return false;
+  });
+}
+
+function notifyDevice(title, body){
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "granted" && document.visibilityState !== "visible") {
+    try { new Notification(title, { body: body }); } catch(e){ /* ignore */ }
+  }
+}
+
+/* ============================================================
+   BATCH STATE (in-memory, per active session)
+============================================================ */
+var ACTIVE = { batch: null, parsed: null, chartRange: 0 };
+var monitorTimer = null;
+var wakeLockRef = null;
+
+/* ============================================================
+   DERIVED STATS
+============================================================ */
+function computeStats(parsed, batchSettings){
+  var pts = parsed.points;
+  if (!pts.length) return null;
+  var last = pts[pts.length - 1];
+  var first = pts[0];
+  var maxSG = -Infinity;
+  for (var i=0;i<pts.length;i++){ if (pts[i].sg !== null && pts[i].sg > maxSG) maxSG = pts[i].sg; }
+  var og = batchSettings.ogOverride !== null && batchSettings.ogOverride !== undefined ? batchSettings.ogOverride : maxSG;
+  var currentSG = last.sg;
+  var attenuation = (currentSG !== null && og && og > 1) ? ((og - currentSG) / (og - 1)) * 100 : null;
+  var abv = (currentSG !== null && og) ? (og - currentSG) * 131.25 : null;
+  var days = (last.t - first.t) / 86400000;
+  var now = new Date();
+  var minutesSinceLast = (now - last.t) / 60000;
+
+  return {
+    og: og, currentSG: currentSG, currentTemp: last.temp,
+    attenuation: attenuation, abv: abv, days: days,
+    lastTime: last.t, minutesSinceLast: minutesSinceLast,
+    pointCount: pts.length
+  };
+}
+
+function evaluateAlertConditions(parsed, stats, batchSettings){
+  var cond = { stale:false, tempHigh:false, tempLow:false, stall:false, swing:false };
+  if (!stats) return cond;
+
+  if (stats.minutesSinceLast >= batchSettings.staleMinutes) cond.stale = true;
+
+  if (!cond.stale) {
+    if (stats.currentTemp !== null) {
+      if (stats.currentTemp > batchSettings.tempMax) cond.tempHigh = true;
+      if (stats.currentTemp < batchSettings.tempMin) cond.tempLow = true;
+    }
+
+    var pts = parsed.points;
+    var lastT = stats.lastTime;
+
+    // rapid swing: compare to closest point ~1hr before last
+    var oneHourAgo = new Date(lastT - 3600000);
+    var refPoint = null;
+    for (var i = pts.length - 1; i >= 0; i--) {
+      if (pts[i].t <= oneHourAgo) { refPoint = pts[i]; break; }
+    }
+    if (refPoint && refPoint.temp !== null && stats.currentTemp !== null) {
+      if (Math.abs(stats.currentTemp - refPoint.temp) >= batchSettings.swingDegrees) cond.swing = true;
+    }
+
+    // stall: SG range within lookback window below threshold, only if still above target/floor
+    var floor = (batchSettings.fgTarget !== null && batchSettings.fgTarget !== undefined) ? (batchSettings.fgTarget + 0.002) : 1.006;
+    if (stats.currentSG !== null && stats.currentSG > floor) {
+      var windowStart = new Date(lastT - batchSettings.stallHours * 3600000);
+      var windowPts = pts.filter(function(p){ return p.t >= windowStart && p.sg !== null; });
+      if (windowPts.length >= 2) {
+        var spanHours = (windowPts[windowPts.length-1].t - windowPts[0].t) / 3600000;
+        if (spanHours >= batchSettings.stallHours * 0.7) {
+          var mn = Infinity, mx = -Infinity;
+          windowPts.forEach(function(p){ if (p.sg < mn) mn = p.sg; if (p.sg > mx) mx = p.sg; });
+          if ((mx - mn) <= batchSettings.stallDelta) cond.stall = true;
+        }
+      }
+    }
+  }
+  return cond;
+}
+
+var ALERT_COPY = {
+  stale: { sev:"warn", title:"Tilt Sentinel: no new readings", tags:"warning" },
+  tempHigh: { sev:"bad", title:"Tilt Sentinel: temp too high", tags:"hot_face" },
+  tempLow: { sev:"bad", title:"Tilt Sentinel: temp too low", tags:"cold_face" },
+  stall: { sev:"warn", title:"Tilt Sentinel: possible stall", tags:"hourglass" },
+  swing: { sev:"bad", title:"Tilt Sentinel: rapid temp swing", tags:"warning" }
+};
+
+function conditionMessage(key, batch, stats, batchSettings){
+  var name = ACTIVE.parsed.beer || batch.label;
+  switch(key){
+    case "stale": return name + ": no new reading in " + Math.round(stats.minutesSinceLast) + " min. Check the Tilt and your phone/hub.";
+    case "tempHigh": return name + ": temp is " + stats.currentTemp.toFixed(1) + " deg" + batchSettings.tempUnitLabel + " (limit " + batchSettings.tempMax + ").";
+    case "tempLow": return name + ": temp is " + stats.currentTemp.toFixed(1) + " deg" + batchSettings.tempUnitLabel + " (limit " + batchSettings.tempMin + ").";
+    case "stall": return name + ": gravity has barely moved in the last " + batchSettings.stallHours + "h. May be stalled.";
+    case "swing": return name + ": temp swung roughly " + Math.abs(stats.currentTemp).toFixed(1) + " deg" + batchSettings.tempUnitLabel + " within about an hour.";
+    default: return name + ": alert.";
+  }
+}
+
+function runAlertEngine(batch, parsed, stats){
+  var bs = getBatchSettings(batch.id);
+  var cond = evaluateAlertConditions(parsed, stats, bs.settings);
+  var prev = bs.activeConditions;
+  var keys = ["stale","tempHigh","tempLow","stall","swing"];
+  var anyNew = false;
+
+  keys.forEach(function(key){
+    if (cond[key] && !prev[key]) {
+      anyNew = true;
+      var copy = ALERT_COPY[key];
+      var msg = conditionMessage(key, batch, stats, bs.settings);
+      logAlert(batch.id, copy.sev, msg);
+      sendNtfy(copy.title, msg, copy.sev === "bad" ? "high" : "default", copy.tags);
+      notifyDevice(copy.title, msg);
+      toast(msg, copy.sev);
+    } else if (!cond[key] && prev[key]) {
+      logAlert(batch.id, "info", (parsed.beer || batch.label) + ": " + key + " condition cleared.");
+    }
+  });
+
+  bs.activeConditions = cond;
+  saveStore();
+  return anyNew;
+}
+
+function logAlert(batchId, sev, msg){
+  var bs = getBatchSettings(batchId);
+  bs.alertLog.unshift({ ts: new Date().toISOString(), sev: sev, msg: msg });
+  if (bs.alertLog.length > 200) bs.alertLog.length = 200;
+  saveStore();
+}
+
+/* ============================================================
+   WAKE LOCK
+============================================================ */
+function requestWakeLock(){
+  if (!("wakeLock" in navigator)) return;
+  navigator.wakeLock.request("screen").then(function(wl){
+    wakeLockRef = wl;
+  }).catch(function(){ /* not available right now, ignore */ });
+}
+function releaseWakeLock(){
+  if (wakeLockRef) { wakeLockRef.release().catch(function(){}); wakeLockRef = null; }
+}
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "visible" && monitorTimer && STORE.global.keepAwake) requestWakeLock();
+});
+
+/* ============================================================
+   CHART RENDERING
+============================================================ */
+function downsample(points, maxN){
+  if (points.length <= maxN) return points;
+  var bucketSize = Math.ceil(points.length / maxN);
+  var out = [];
+  for (var i=0;i<points.length;i+=bucketSize){
+    var slice = points.slice(i, i+bucketSize);
+    var sumSG=0, cntSG=0, sumT=0, cntT=0, comment="";
+    slice.forEach(function(p){
+      if (p.sg !== null) { sumSG += p.sg; cntSG++; }
+      if (p.temp !== null) { sumT += p.temp; cntT++; }
+      if (p.comment && !comment) comment = p.comment;
+    });
+    out.push({
+      t: slice[Math.floor(slice.length/2)].t,
+      sg: cntSG ? sumSG/cntSG : null,
+      temp: cntT ? sumT/cntT : null,
+      comment: comment
+    });
+  }
+  return out;
+}
+
+function filterByRange(points, rangeDays){
+  if (!rangeDays || !points.length) return points;
+  var last = points[points.length-1].t;
+  var cutoff = new Date(last - rangeDays*86400000);
+  return points.filter(function(p){ return p.t >= cutoff; });
+}
+
+var chartMarkers = [];
+
+function drawChart(){
+  var canvas = document.getElementById("chart");
+  var emptyEl = document.getElementById("chart-empty");
+  if (!ACTIVE.parsed || !ACTIVE.parsed.points.length) {
+    emptyEl.hidden = false;
+    var ctxClear = canvas.getContext("2d");
+    ctxClear.clearRect(0,0,canvas.width,canvas.height);
+    return;
+  }
+
+  var ranged = filterByRange(ACTIVE.parsed.points, ACTIVE.chartRange);
+  if (!ranged.length) { emptyEl.hidden = false; return; }
+  emptyEl.hidden = true;
+
+  var pts = downsample(ranged, MAX_CHART_POINTS);
+  var dpr = window.devicePixelRatio || 1;
+  var rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  var ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  var W = rect.width, H = rect.height;
+  ctx.clearRect(0,0,W,H);
+
+  var padL = 46, padR = 42, padT = 12, padB = 24;
+  var plotW = W - padL - padR;
+  var plotH = H - padT - padB;
+
+  var sgVals = pts.filter(function(p){ return p.sg !== null; }).map(function(p){ return p.sg; });
+  var tVals = pts.filter(function(p){ return p.temp !== null; }).map(function(p){ return p.temp; });
+  if (!sgVals.length) sgVals = [1.000, 1.060];
+  if (!tVals.length) tVals = [60, 70];
+
+  var sgMin = Math.min.apply(null, sgVals), sgMax = Math.max.apply(null, sgVals);
+  var sgPad = (sgMax - sgMin) * 0.12 || 0.003;
+  sgMin -= sgPad; sgMax += sgPad;
+
+  var tMin = Math.min.apply(null, tVals), tMax = Math.max.apply(null, tVals);
+  var tPad = (tMax - tMin) * 0.18 || 3;
+  tMin -= tPad; tMax += tPad;
+
+  var t0 = pts[0].t.getTime(), t1 = pts[pts.length-1].t.getTime();
+  var tSpan = Math.max(t1 - t0, 1);
+
+  function xFor(t){ return padL + ((t.getTime() - t0) / tSpan) * plotW; }
+  function ySG(v){ return padT + (1 - (v - sgMin) / (sgMax - sgMin)) * plotH; }
+  function yT(v){ return padT + (1 - (v - tMin) / (tMax - tMin)) * plotH; }
+
+  // grid
+  ctx.strokeStyle = "rgba(244,234,217,0.08)";
+  ctx.lineWidth = 1;
+  var gridLines = 4;
+  for (var g=0; g<=gridLines; g++){
+    var gy = padT + (g/gridLines) * plotH;
+    ctx.beginPath();
+    ctx.moveTo(padL, gy); ctx.lineTo(padL+plotW, gy);
+    ctx.stroke();
+    var sgLabelVal = sgMax - (g/gridLines)*(sgMax-sgMin);
+    ctx.fillStyle = "#a89a86";
+    ctx.font = "10px Space Mono, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(sgLabelVal.toFixed(3), padL - 6, gy + 3);
+    var tLabelVal = tMax - (g/gridLines)*(tMax-tMin);
+    ctx.textAlign = "left";
+    ctx.fillText(tLabelVal.toFixed(0) + "d", padL + plotW + 6, gy + 3);
+  }
+
+  // x-axis date labels (start / mid / end)
+  ctx.fillStyle = "#a89a86";
+  ctx.font = "10px Space Mono, monospace";
+  ctx.textAlign = "left";
+  ctx.fillText(fmtShortDate(pts[0].t), padL, H - 6);
+  ctx.textAlign = "right";
+  ctx.fillText(fmtShortDate(pts[pts.length-1].t), padL+plotW, H - 6);
+
+  // temp line (dashed, neutral)
+  ctx.beginPath();
+  ctx.setLineDash([4,3]);
+  ctx.strokeStyle = "#7fa8c9";
+  ctx.lineWidth = 1.5;
+  var started = false;
+  pts.forEach(function(p){
+    if (p.temp === null) { started = false; return; }
+    var x = xFor(p.t), y = yT(p.temp);
+    if (!started) { ctx.moveTo(x,y); started = true; } else { ctx.lineTo(x,y); }
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // sg line (color matched to physical tilt)
+  var sgColor = TILT_COLORS[(ACTIVE.parsed.colorName||"").toUpperCase()] || "#e8a33d";
+  document.documentElement.style.setProperty("--sg-color", sgColor);
+  ctx.beginPath();
+  ctx.strokeStyle = sgColor;
+  ctx.lineWidth = 2;
+  started = false;
+  pts.forEach(function(p){
+    if (p.sg === null) { started = false; return; }
+    var x = xFor(p.t), y = ySG(p.sg);
+    if (!started) { ctx.moveTo(x,y); started = true; } else { ctx.lineTo(x,y); }
+  });
+  ctx.stroke();
+
+  // comment markers
+  chartMarkers = [];
+  pts.forEach(function(p){
+    if (p.comment && p.sg !== null) {
+      var x = xFor(p.t), y = ySG(p.sg);
+      ctx.beginPath();
+      ctx.fillStyle = "#f4ead9";
+      ctx.arc(x, y, 3.5, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.strokeStyle = "#141110";
+      ctx.lineWidth = 1;
+      ctx.arc(x, y, 3.5, 0, Math.PI*2);
+      ctx.stroke();
+      chartMarkers.push({ x:x, y:y, point:p });
+    }
+  });
+
+  canvas._pts = pts;
+  canvas._xFor = xFor;
+}
+
+function fmtShortDate(d){
+  return (d.getMonth()+1) + "/" + d.getDate() + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+function pad2(n){ return n < 10 ? "0"+n : ""+n; }
+
+function setupChartInteraction(){
+  var canvas = document.getElementById("chart");
+  var tip = document.getElementById("chart-tooltip");
+
+  function handle(clientX, clientY){
+    var pts = canvas._pts;
+    if (!pts || !pts.length) return;
+    var rect = canvas.getBoundingClientRect();
+    var mx = clientX - rect.left;
+
+    // nearest marker first
+    var nearestMarker = null, bestMD = 14;
+    chartMarkers.forEach(function(m){
+      var d = Math.abs(m.x - mx);
+      if (d < bestMD) { bestMD = d; nearestMarker = m; }
+    });
+
+    var target = null;
+    if (nearestMarker) {
+      target = nearestMarker.point;
+    } else {
+      var best = null, bd = Infinity;
+      pts.forEach(function(p){
+        var x = canvas._xFor(p.t);
+        var d = Math.abs(x - mx);
+        if (d < bd) { bd = d; best = p; }
+      });
+      target = best;
+    }
+    if (!target) return;
+
+    var lines = [fmtFullDate(target.t)];
+    if (target.sg !== null) lines.push("SG " + target.sg.toFixed(3));
+    if (target.temp !== null) lines.push("Temp " + target.temp.toFixed(1));
+    if (target.comment) lines.push(escapeHTML(target.comment));
+    tip.innerHTML = lines.map(function(l){ return escapeHTML(l); }).join("<br>");
+    tip.style.display = "block";
+    var left = mx + 12;
+    if (left + 210 > rect.width) left = mx - 210 - 12;
+    tip.style.left = Math.max(4,left) + "px";
+    tip.style.top = "6px";
+  }
+
+  canvas.addEventListener("mousemove", function(e){ handle(e.clientX, e.clientY); });
+  canvas.addEventListener("mouseleave", function(){ tip.style.display = "none"; });
+  canvas.addEventListener("touchstart", function(e){
+    if (e.touches[0]) handle(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive:true });
+  canvas.addEventListener("touchmove", function(e){
+    if (e.touches[0]) handle(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive:true });
+
+  window.addEventListener("resize", debounce(function(){ drawChart(); }, 150));
+}
+
+function debounce(fn, ms){
+  var timer = null;
+  return function(){
+    var args = arguments;
+    clearTimeout(timer);
+    timer = setTimeout(function(){ fn.apply(null, args); }, ms);
+  };
+}
+
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, function(c){
+    return { "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[c];
+  });
+}
+function fmtFullDate(d){
+  return d.toLocaleDateString(undefined,{ month:"short", day:"numeric" }) + " " + d.toLocaleTimeString(undefined,{ hour:"2-digit", minute:"2-digit" });
+}
+
+/* ============================================================
+   UI RENDER
+============================================================ */
+function renderBatchTabs(){
+  var wrap = document.getElementById("batch-tabs");
+  wrap.innerHTML = "";
+  if (!STORE.batches.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  STORE.batches.forEach(function(b){
+    var chip = document.createElement("button");
+    chip.className = "batch-chip" + (b.id === STORE.activeBatchId ? " active" : "");
+    chip.innerHTML = '<span class="dot"></span>' + escapeHTML(b.label);
+    chip.addEventListener("click", function(){ selectBatch(b.id); });
+    wrap.appendChild(chip);
+  });
+  var addChip = document.createElement("button");
+  addChip.className = "batch-chip add";
+  addChip.textContent = "+ Add";
+  addChip.addEventListener("click", function(){
+    document.getElementById("setup-section").hidden = false;
+    document.getElementById("sheet-url-input").focus();
+  });
+  wrap.appendChild(addChip);
+}
+
+function renderDashboard(){
+  var dash = document.getElementById("dashboard");
+  if (!ACTIVE.batch || !ACTIVE.parsed) { dash.hidden = true; return; }
+  dash.hidden = false;
+
+  var batch = ACTIVE.batch;
+  var parsed = ACTIVE.parsed;
+  var bs = getBatchSettings(batch.id);
+  var stats = computeStats(parsed, bs.settings);
+
+  document.getElementById("batch-title").textContent = parsed.beer || batch.label;
+
+  if (!stats) {
+    document.getElementById("last-seen").textContent = "No readings found yet.";
+    return;
+  }
+
+  var minutesAgo = stats.minutesSinceLast;
+  var pill = document.getElementById("status-pill");
+  var label = document.getElementById("status-label");
+  pill.className = "status-pill good";
+  label.textContent = "Fresh";
+  if (minutesAgo >= bs.settings.staleMinutes) {
+    pill.className = "status-pill bad"; label.textContent = "Offline?";
+  } else if (minutesAgo >= bs.settings.staleMinutes * 0.6) {
+    pill.className = "status-pill warn"; label.textContent = "Slowing";
+  }
+
+  document.getElementById("last-seen").textContent =
+    "Last reading " + fmtFullDate(stats.lastTime) + " (" + relTime(minutesAgo) + " ago)";
+
+  document.getElementById("stat-sg").textContent = stats.currentSG !== null ? stats.currentSG.toFixed(3) : "-";
+  document.getElementById("stat-temp").innerHTML = stats.currentTemp !== null ? (stats.currentTemp.toFixed(1) + "<small> deg" + bs.settings.tempUnitLabel + "</small>") : "-";
+
+  var ogInput = document.getElementById("stat-og");
+  if (document.activeElement !== ogInput) ogInput.value = stats.og ? stats.og.toFixed(3) : "";
+  var fgInput = document.getElementById("stat-fg");
+  if (document.activeElement !== fgInput) fgInput.value = (bs.settings.fgTarget !== null && bs.settings.fgTarget !== undefined) ? bs.settings.fgTarget.toFixed(3) : "";
+
+  document.getElementById("stat-atten").textContent = stats.attenuation !== null ? stats.attenuation.toFixed(1) + "%" : "-";
+  document.getElementById("stat-abv").textContent = stats.abv !== null ? stats.abv.toFixed(2) + "%" : "-";
+  document.getElementById("stat-days").textContent = stats.days.toFixed(1);
+  document.getElementById("stat-points").textContent = stats.pointCount;
+
+  drawChart();
+  renderAlertLog();
+  renderMonitorUI();
+}
+
+function relTime(minutes){
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return Math.round(minutes) + "m";
+  var hours = minutes/60;
+  if (hours < 48) return hours.toFixed(1) + "h";
+  return (hours/24).toFixed(1) + "d";
+}
+
+function renderAlertLog(){
+  var wrap = document.getElementById("alert-log");
+  var bs = getBatchSettings(ACTIVE.batch.id);
+  var log = bs.alertLog;
+  if (!log.length) { wrap.innerHTML = '<div class="empty-log">No alerts yet. Quiet fermenter.</div>'; return; }
+  wrap.innerHTML = log.slice(0,60).map(function(item){
+    var d = new Date(item.ts);
+    return '<div class="alert-item"><span class="sev-dot ' + item.sev + '"></span>' +
+      '<div><div class="msg">' + escapeHTML(item.msg) + '</div><div class="ts">' + fmtFullDate(d) + '</div></div></div>';
+  }).join("");
+}
+
+function renderMonitorUI(){
+  var sw = document.getElementById("monitor-switch");
+  var status = document.getElementById("monitor-status");
+  if (monitorTimer) {
+    sw.classList.add("on");
+    status.classList.add("live");
+    status.textContent = "Monitoring live - checking every " + STORE.global.pollMinutes + " min.";
+  } else {
+    sw.classList.remove("on");
+    status.classList.remove("live");
+    status.textContent = "Monitoring is off. Turn it on to poll this sheet and push alerts while this tab stays open.";
+  }
+}
+
+/* ============================================================
+   BATCH LOADING / SELECTION
+============================================================ */
+function showLoadError(msg){
+  var ss = document.getElementById("setup-section");
+  var se = document.getElementById("setup-error");
+  if (ss) ss.hidden = false;
+  if (se){ se.textContent = msg; se.style.display = "block"; }
+}
+function clearLoadError(){
+  var se = document.getElementById("setup-error");
+  if (se) se.style.display = "none";
+  var ss = document.getElementById("setup-section");
+  if (ss) ss.hidden = STORE.batches.length > 0;
+}
+function fetchAndRenderBatch(batch, silent){
+  return loadSheetData(batch.sheetId, batch.gid).then(function(resp){
+    var parsed = parseSheetData(resp);
+    if (batch.id === (ACTIVE.batch && ACTIVE.batch.id)) {
+      ACTIVE.parsed = parsed;
+      renderDashboard();
+      clearLoadError();
+    }
+    return parsed;
+  }).catch(function(err){
+    if (!silent) {
+      toast(err.message || "Could not load sheet.", "bad");
+      showLoadError(err.message || "Could not load sheet.");
+    }
+    throw err;
+  });
+}
+
+function selectBatch(id){
+  var batch = STORE.batches.filter(function(b){ return b.id === id; })[0];
+  if (!batch) return;
+  STORE.activeBatchId = id;
+  saveStore();
+  ACTIVE.batch = batch;
+  ACTIVE.parsed = null;
+  ACTIVE.chartRange = 0;
+  renderBatchTabs();
+  document.getElementById("dashboard").hidden = false;
+  document.getElementById("batch-title").textContent = batch.label;
+  document.getElementById("settings-btn").hidden = false;
+  document.getElementById("setup-section").hidden = STORE.batches.length > 0;
+  toast("Loading " + batch.label + "...");
+  fetchAndRenderBatch(batch).catch(function(){});
+}
+
+function checkActiveBatchAndAlert(){
+  if (!ACTIVE.batch) return;
+  var batch = ACTIVE.batch;
+  fetchAndRenderBatch(batch, true).then(function(parsed){
+    var bs = getBatchSettings(batch.id);
+    var stats = computeStats(parsed, bs.settings);
+    if (stats) runAlertEngine(batch, parsed, stats);
+    var status = document.getElementById("monitor-status");
+    if (monitorTimer) status.textContent = "Monitoring live - last checked " + new Date().toLocaleTimeString();
+  }).catch(function(){ /* toast already shown */ });
+}
+
+/* ============================================================
+   EVENT WIRING
+============================================================ */
+document.getElementById("add-batch-btn").addEventListener("click", function(){
+  var input = document.getElementById("sheet-url-input");
+  var err = document.getElementById("setup-error");
+  var parsedIds = parseSheetInput(input.value);
+  if (!parsedIds) {
+    err.textContent = "That doesn't look like a Google Sheets link or ID.";
+    err.style.display = "block";
+    return;
+  }
+  err.style.display = "none";
+  var id = "b_" + Date.now() + "_" + Math.random().toString(36).slice(2,7);
+  var label = "Batch " + (STORE.batches.length + 1);
+  var batch = { id:id, sheetId: parsedIds.sheetId, gid: parsedIds.gid, label: label, addedAt: new Date().toISOString() };
+  STORE.batches.push(batch);
+  saveStore();
+  input.value = "";
+  renderBatchTabs();
+  selectBatch(id);
+});
+
+document.getElementById("range-btns").addEventListener("click", function(e){
+  var btn = e.target.closest(".range-btn");
+  if (!btn) return;
+  document.querySelectorAll(".range-btn").forEach(function(b){ b.classList.remove("active"); });
+  btn.classList.add("active");
+  ACTIVE.chartRange = parseInt(btn.dataset.range, 10);
+  drawChart();
+});
+
+document.getElementById("stat-og").addEventListener("change", function(){
+  if (!ACTIVE.batch) return;
+  var v = parseFloat(this.value);
+  var bs = getBatchSettings(ACTIVE.batch.id);
+  bs.settings.ogOverride = isNaN(v) ? null : v;
+  saveStore();
+  renderDashboard();
+});
+document.getElementById("stat-fg").addEventListener("change", function(){
+  if (!ACTIVE.batch) return;
+  var v = parseFloat(this.value);
+  var bs = getBatchSettings(ACTIVE.batch.id);
+  bs.settings.fgTarget = isNaN(v) ? null : v;
+  saveStore();
+  renderDashboard();
+});
+
+document.getElementById("monitor-switch").addEventListener("click", function(){
+  if (!ACTIVE.batch) return;
+  if (monitorTimer) {
+    clearInterval(monitorTimer);
+    monitorTimer = null;
+    releaseWakeLock();
+    renderMonitorUI();
+  } else {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    monitorTimer = setInterval(checkActiveBatchAndAlert, Math.max(2, STORE.global.pollMinutes) * 60000);
+    checkActiveBatchAndAlert();
+    if (STORE.global.keepAwake) requestWakeLock();
+    renderMonitorUI();
+  }
+});
+
+document.getElementById("check-now-btn").addEventListener("click", function(){
+  if (!ACTIVE.batch) { toast("Add a batch first."); return; }
+  toast("Checking " + ACTIVE.batch.label + "...");
+  checkActiveBatchAndAlert();
+});
+
+document.getElementById("clear-log-btn").addEventListener("click", function(){
+  if (!ACTIVE.batch) return;
+  var bs = getBatchSettings(ACTIVE.batch.id);
+  bs.alertLog = [];
+  saveStore();
+  renderAlertLog();
+});
+
+/* ---------- settings modal ---------- */
+function openSettingsModal(){
+  var batch = ACTIVE.batch;
+  var bs = batch ? getBatchSettings(batch.id) : null;
+  var g = STORE.global;
+
+  var overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<button class="icon-btn modal-close" id="modal-close-btn">X</button>' +
+      '<h2>Settings</h2>' +
+
+      '<h3>Push Alerts</h3>' +
+      '<div class="form-grid">' +
+        '<div class="form-field full"><label>ntfy.sh topic name</label><input type="text" id="set-ntfy" placeholder="e.g. stino-fermenter-77x" value="' + escapeHTML(g.ntfyTopic) + '"></div>' +
+        '<div class="form-field"><label>Poll interval (min)</label><input type="number" id="set-poll" min="2" value="' + g.pollMinutes + '"></div>' +
+        '<div class="form-field"><label>&nbsp;</label><button class="btn secondary" id="set-ntfy-test">Send Test</button></div>' +
+      '</div>' +
+      '<div class="check-row"><input type="checkbox" id="set-wake"' + (g.keepAwake?" checked":"") + '> Try to keep screen awake while monitoring</div>' +
+      '<p class="hint" style="margin-top:8px;">Install the free <a href="https://ntfy.sh" target="_blank" rel="noopener" style="color:var(--amber);">ntfy</a> app and subscribe to the topic name above to get push notifications on your phone. Anyone who knows the topic name can read it, so pick something unguessable.</p>' +
+      '<button class="btn ghost" id="set-notif-btn" style="margin-top:8px;">Enable on-device browser alerts</button>' +
+
+      (batch ? (
+        '<h3>Thresholds for ' + escapeHTML(batch.label) + '</h3>' +
+        '<div class="form-grid">' +
+          '<div class="form-field"><label>Temp min (deg ' + escapeHTML(bs.settings.tempUnitLabel) + ')</label><input type="number" id="set-tmin" value="' + bs.settings.tempMin + '"></div>' +
+          '<div class="form-field"><label>Temp max (deg ' + escapeHTML(bs.settings.tempUnitLabel) + ')</label><input type="number" id="set-tmax" value="' + bs.settings.tempMax + '"></div>' +
+          '<div class="form-field"><label>Rapid swing (deg/hr)</label><input type="number" id="set-swing" value="' + bs.settings.swingDegrees + '"></div>' +
+          '<div class="form-field"><label>Stale after (min)</label><input type="number" id="set-stale" value="' + bs.settings.staleMinutes + '"></div>' +
+          '<div class="form-field"><label>Stall window (hrs)</label><input type="number" id="set-stallh" value="' + bs.settings.stallHours + '"></div>' +
+          '<div class="form-field"><label>Stall delta (SG)</label><input type="number" step="0.001" id="set-stalld" value="' + bs.settings.stallDelta + '"></div>' +
+        '</div>' +
+        '<div class="form-field full" style="margin-top:8px;"><label>Batch label</label><input type="text" id="set-label" value="' + escapeHTML(batch.label) + '"></div>'
+      ) : "") +
+
+      '<h3>Tracked Batches</h3>' +
+      '<div id="saved-batch-list"></div>' +
+
+      '<div class="btn-row">' +
+        '<button class="btn" id="settings-save-btn">Save</button>' +
+        '<button class="btn secondary" id="settings-cancel-btn">Cancel</button>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(overlay);
+
+  var listEl = overlay.querySelector("#saved-batch-list");
+  STORE.batches.forEach(function(b){
+    var row = document.createElement("div");
+    row.className = "saved-batch-row";
+    row.innerHTML = '<span class="sb-name">' + escapeHTML(b.label) + '</span><button data-id="' + b.id + '">Remove</button>';
+    row.querySelector("button").addEventListener("click", function(){
+      removeBatch(b.id);
+      row.remove();
+    });
+    listEl.appendChild(row);
+  });
+
+  overlay.querySelector("#set-ntfy-test").addEventListener("click", function(){
+    var topicVal = overlay.querySelector("#set-ntfy").value.trim();
+    if (!topicVal) { toast("Enter a topic name first.", "bad"); return; }
+    var prevTopic = STORE.global.ntfyTopic;
+    STORE.global.ntfyTopic = topicVal;
+    sendNtfy("Tilt Sentinel test", "If you can see this, your ntfy topic is wired up correctly.", "default", "beer").then(function(ok){
+      STORE.global.ntfyTopic = prevTopic;
+      toast(ok ? "Test sent - check your phone." : "Could not reach ntfy.sh.", ok ? "good" : "bad");
+    });
+  });
+
+  overlay.querySelector("#set-notif-btn").addEventListener("click", function(){
+    if (typeof Notification === "undefined") { toast("Browser notifications aren't supported here.", "bad"); return; }
+    Notification.requestPermission().then(function(p){
+      toast(p === "granted" ? "On-device alerts enabled." : "Permission not granted.", p === "granted" ? "good" : "bad");
+    });
+  });
+
+  function close(){ overlay.remove(); }
+  overlay.querySelector("#modal-close-btn").addEventListener("click", close);
+  overlay.querySelector("#settings-cancel-btn").addEventListener("click", close);
+  overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+
+  overlay.querySelector("#settings-save-btn").addEventListener("click", function(){
+    STORE.global.ntfyTopic = overlay.querySelector("#set-ntfy").value.trim();
+    STORE.global.pollMinutes = Math.max(2, parseInt(overlay.querySelector("#set-poll").value, 10) || 5);
+    STORE.global.keepAwake = overlay.querySelector("#set-wake").checked;
+
+    if (batch) {
+      var newLabel = overlay.querySelector("#set-label").value.trim();
+      if (newLabel) batch.label = newLabel;
+      bs.settings.tempMin = parseFloat(overlay.querySelector("#set-tmin").value);
+      bs.settings.tempMax = parseFloat(overlay.querySelector("#set-tmax").value);
+      bs.settings.swingDegrees = parseFloat(overlay.querySelector("#set-swing").value);
+      bs.settings.staleMinutes = parseFloat(overlay.querySelector("#set-stale").value);
+      bs.settings.stallHours = parseFloat(overlay.querySelector("#set-stallh").value);
+      bs.settings.stallDelta = parseFloat(overlay.querySelector("#set-stalld").value);
+    }
+    saveStore();
+    renderBatchTabs();
+    renderDashboard();
+    if (monitorTimer) {
+      clearInterval(monitorTimer);
+      monitorTimer = setInterval(checkActiveBatchAndAlert, Math.max(2, STORE.global.pollMinutes) * 60000);
+    }
+    toast("Settings saved.", "good");
+    close();
+  });
+}
+
+function removeBatch(id){
+  STORE.batches = STORE.batches.filter(function(b){ return b.id !== id; });
+  delete STORE.perBatch[id];
+  if (STORE.activeBatchId === id) STORE.activeBatchId = STORE.batches.length ? STORE.batches[0].id : null;
+  saveStore();
+  renderBatchTabs();
+  if (STORE.activeBatchId) {
+    selectBatch(STORE.activeBatchId);
+  } else {
+    ACTIVE.batch = null; ACTIVE.parsed = null;
+    document.getElementById("dashboard").hidden = true;
+    document.getElementById("settings-btn").hidden = true;
+    document.getElementById("setup-section").hidden = false;
+  }
+}
+
+document.getElementById("settings-btn").addEventListener("click", openSettingsModal);
+
+/* ============================================================
+   INIT
+============================================================ */
+function init(){
+  setupChartInteraction();
+  renderBatchTabs();
+  if (STORE.batches.length) {
+    document.getElementById("setup-section").hidden = true;
+    document.getElementById("settings-btn").hidden = false;
+    var startId = STORE.activeBatchId && STORE.batches.some(function(b){return b.id===STORE.activeBatchId;})
+      ? STORE.activeBatchId : STORE.batches[0].id;
+    selectBatch(startId);
+  }
+}
+init();
+
+})();
+</script>
+</body>
+</html>
